@@ -1,0 +1,51 @@
+# Physics-informed neural-network configuration.
+case:
+  length: 1.0
+  u_left: 0.5
+  u_right: 1.0
+  velocity: 1.0
+  diffusivity: 0.025
+
+grid:
+  n_space: 57
+  final_time: 5.0
+  dt: 0.001
+
+architecture:
+  source: nas_postprocess
+  metadata_path: results/metrics/nas_selected_model_metadata.json
+  require_twice_differentiable_activation: true
+
+training:
+  first_window_final_time: 0.1
+  window_increment: 0.1
+  max_epochs_per_window: 1000
+  patience: 20
+  update_learning_rate: false
+  transfer_nas_weights: false
+
+postprocess:
+  profile_times: [0.0, 0.25, 0.5, 0.75, 1.0, 5.0]
+  solution_order: [Analytical, CDS-EF, CDS-CN, Compact-CN, PINN]
+  zoom_points:
+    - [0.0, 0.502]
+    - [1.0, 0.9995]
+  zoom_delta: [0.003, 0.001]
+  text_locations: [null, null, 0.65, 0.8, 0.9, 0.92]
+  colors:
+    Analytical: royalblue
+    CDS-EF: crimson
+    CDS-CN: seagreen
+    Compact-CN: darkviolet
+    PINN: orangered
+
+inputs:
+  numerical_config: configs/numerical.yaml
+
+outputs:
+  data_dir: data/pinn
+  histories_dir: data/pinn/histories
+  models_dir: results/models/pinn
+  postprocess_dir: results/postprocess/pinn
+  figure_dir: results/figures/pinn
+  metrics_dir: results/metrics

@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: >-
+  If you use this code, please cite it using the metadata in this file. This
+  repository accompanies a manuscript that is currently under review;
+  citation details for the manuscript itself will be added once it is
+  published.
+title: "Code for a Temporal Spectral Analysis of Late-Time Error in a Physics-Informed Neural Network Solution of the One-Dimensional Advection-Diffusion Equation"
+type: software
+authors:
+  - family-names: "Díaz-León"
+    given-names: "David"
+    affiliation: "Universidad Nacional de Colombia"
+    email: "dldiazl@unal.edu.co"
+license: MIT
+version: "0.1.0"

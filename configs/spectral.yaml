@@ -1,0 +1,53 @@
+# Late-time temporal spectral-analysis configuration.
+inputs:
+  pinn_config: configs/pinn.yaml
+  reference_config: configs/reference.yaml
+  numerical_config: configs/numerical.yaml
+
+analysis:
+  retained_energy_fraction: 0.95
+  spectrum_source: raw_pinn_field
+  temporal_transform: dft
+  filter_type: hard_symmetric_low_pass
+  first_cutoff_time: 0.1
+  cutoff_increment: 0.1
+  selection_mode: reduced_sensitivity_at_final_time
+  reduced_sensitivity_minimum_points_per_segment: 3
+
+reference_validation:
+  enabled: true
+  metric: rmse_window
+  compare_with_raw_pinn: true
+
+temporal_stability:
+  enabled: false
+  include_all_spatial_nodes: true
+
+postprocess:
+  adapt_axes_to_processed_time: true
+  sensitivity_xlim: [0.0, 5.0]
+  sensitivity_ylim: [0.0, 5.0]
+  sensitivity_cmap: coolwarm
+  reference_rmse_cmap: viridis
+  temporal_std_cmap: magma_r
+  temporal_std_per_duration_cmap: magma_r
+  temporal_derivative_cmap: magma_r
+  time_error_ylim: [0.0001, 1.0]
+  space_error_ylim: [0.0001, 10.0]
+  time_curve_order: [CDS_EF, CDS_CN, CompactSchemes_CN, PINN, PINN_Filtered]
+  rmse_time_curve_order: [CDS_EF, CDS_CN, CompactSchemes_CN, PINN, PINN_Filtered_RMSE_Path]
+  space_curve_order: [CDS_EF, CDS_CN, CompactSchemes_CN, PINN, PINN_Filtered]
+
+outputs:
+  data_dir: data/spectral
+  postprocess_dir: results/postprocess/spectral
+  figure_dir: results/figures/spectral
+  metrics_dir: results/metrics
+  sweep_file: spectral_sweep.parquet
+  filtered_solution_file: selected_filtered_solution.parquet
+  spectrum_file: selected_spectrum.parquet
+  reference_window_sweep_file: spectral_reference_window_sweep.csv
+  temporal_stability_sweep_file: spectral_temporal_stability_sweep.csv
+  metric_path_comparison_file: spectral_metric_path_comparison.csv
+  generation_metadata_file: spectral_generation_metadata.json
+  postprocess_metadata_file: spectral_diagnostics_metadata.json

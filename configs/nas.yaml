@@ -1,0 +1,48 @@
+# Supervised NAS configuration.
+case:
+  length: 1.0
+  u_left: 0.5
+  u_right: 1.0
+  velocity: 1.0
+  diffusivity: 0.025
+
+grid:
+  n_space: 57
+  final_time: 5.0
+  dt: 0.001
+
+training:
+  training_final_time: 1.0
+  max_epochs: 1000
+  n_trials: 100
+  population_size: 20
+  generations: 5
+  sampler_seed: 0
+  study_name: nas_t1_e1000_trials100_pop20_gen5
+
+search_space:
+  num_layers:
+    low: 3
+    high: 10
+  neurons_per_layer:
+    low: 10
+    high: 100
+    step: 5
+  activation:
+    - relu
+    - tanh
+    - sigmoid
+
+selection:
+  criterion: minimum_final_mse
+
+postprocess:
+  profile_times: [0.0, 0.25, 0.5, 0.75, 1.0]
+
+outputs:
+  data_dir: data/nas
+  histories_dir: data/nas/histories
+  models_dir: results/models/nas
+  postprocess_dir: results/postprocess/nas
+  figure_dir: results/figures/nas
+  metrics_dir: results/metrics

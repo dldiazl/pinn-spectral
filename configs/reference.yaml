@@ -1,0 +1,31 @@
+# Analytical reference configuration for the pre-NAS workflow.
+case:
+  length: 1.0
+  u_left: 0.5
+  u_right: 1.0
+  velocity: 1.0
+  diffusivity: 0.025
+
+grid:
+  n_space: 57
+  final_time: 5.0
+  dt: 0.001
+
+reference:
+  n_terms: 100000
+  averaging_width: 10000
+  implementation: optimized
+  n_modes_per_block: 2000
+  n_times_per_block: 256
+
+outputs:
+  data_dir: data/reference
+  postprocess_dir: results/postprocess/reference
+  figure_dir: results/figures/reference
+  metrics_dir: results/metrics
+
+# Diagnostic data used by the reference figures.
+diagnostics:
+  k_values: [1, 10, 100, 1000, 10000]
+  temporal_n_terms: 100000
+  temporal_averaging_width: 1

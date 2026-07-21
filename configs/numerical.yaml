@@ -1,0 +1,23 @@
+# Finite-difference baseline configuration for the pre-NAS workflow.
+case:
+  length: 1.0
+  u_left: 0.5
+  u_right: 1.0
+  velocity: 1.0
+  diffusivity: 0.025
+
+grid:
+  n_space: 57
+  final_time: 5.0
+  dt: 0.001
+
+methods:
+  - CDS_EF
+  - CDS_CN
+  - CompactSchemes_CN
+
+outputs:
+  data_dir: data/numerical
+  postprocess_dir: results/postprocess/numerical
+  figure_dir: results/figures/numerical
+  metrics_dir: results/metrics
