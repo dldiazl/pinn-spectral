@@ -290,8 +290,8 @@ def plot_nas_profiles(input_path: str | Path, output_path: str | Path) -> None:
         delta=[0.007, 0.005],
         text_locations=[None, None, 0.65, 0.8, 0.9],
         colors={"Analytical": "royalblue", "NN": "crimson"},
-        linewidth=0.5,
-        markersize=1.0,
+        linewidth=1.2,
+        markersize=2.5,
         figsize=(12.0, 5.0),
         show_legend=True,
     )

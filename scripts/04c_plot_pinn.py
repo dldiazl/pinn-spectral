@@ -138,8 +138,8 @@ def main() -> None:
         delta=postprocess.get("zoom_delta", 0.05),
         text_locations=postprocess.get("text_locations"),
         colors=postprocess.get("colors"),
-        linewidth=0.5,
-        markersize=1.0,
+        linewidth=1.2,
+        markersize=2.5,
     )
 
     plot_training_loss_history(
