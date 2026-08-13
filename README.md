@@ -67,26 +67,26 @@ run independently from its own configuration.
 
 ## Setup
 
-The pipeline was run with PyTorch inside a Conda environment on Windows.
-Create an environment with the following packages and activate it before
-running any script:
+The pipeline was run with Python 3.12.13 and PyTorch 2.12.1 inside a Conda
+environment on Windows. The exact package versions used to produce the
+reported results are pinned in `requirements.txt`:
 
 ```text
-numpy
-pandas
-scipy
-matplotlib
-torch
-optuna
-pyyaml
-pyarrow
-pytest
+numpy==2.5.0
+pandas==3.0.3
+scipy==1.18.0
+matplotlib==3.11.0
+torch==2.12.1
+optuna==4.9.0
+pyyaml==6.0.3
+pyarrow==24.0.0
+pytest==9.1.1
 ```
 
 ```bat
-conda create -n pinn-spectral python=3.11
+conda create -n pinn-spectral python=3.12
 conda activate pinn-spectral
-pip install numpy pandas scipy matplotlib torch optuna pyyaml pyarrow pytest
+pip install -r requirements.txt
 set PYTHONPATH=src
 ```
 
