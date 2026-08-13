@@ -352,6 +352,147 @@ def build_adjacent_training_discrepancy(
     return pd.DataFrame(rows)
 
 
+def build_preprocessing_sensitivity(
+    u_pinn: np.ndarray,
+    t: np.ndarray,
+    u_ref: np.ndarray,
+    tcut: float,
+    dt: float,
+    q_values: tuple[float, ...] = (0.90, 0.95, 0.99),
+    curve_q: float = 0.95,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Compare raw and mean-removed spectrum preprocessing at the selected interval.
+
+    Every combination of ``spectrum_source`` and retained-energy fraction in
+    ``q_values`` is applied at the same selected cutoff, and each
+    reconstruction is scored against the reference through the window RMSE on
+    ``[tcut, tmax]`` and the final-time spatial error norm. The returned
+    curves table contains the full error-time histories of the unfiltered
+    field and of the two reconstructions at ``curve_q``, and the diagnostics
+    dictionary summarizes the spectral composition that explains the outcome:
+    the zero-frequency energy fraction of the raw segment, the maximum
+    difference between the raw reconstruction and the per-node temporal mean
+    of the segment, and the fluctuation-energy fraction of the first nonzero
+    frequency pair.
+    """
+    window_mask = t >= float(tcut) - max(1e-12, float(dt) * 1e-7)
+    window_sample_count = int(np.count_nonzero(window_mask))
+    frequency_resolution = float(1.0 / (window_sample_count * float(dt)))
+
+    def window_rmse(u_field: np.ndarray) -> float:
+        difference = u_field[:, window_mask] - u_ref[:, window_mask]
+        return float(np.sqrt(np.mean(difference**2)))
+
+    error_unfiltered = compute_error_time(u_pinn, u_ref)
+    final_unfiltered = float(error_unfiltered[-1])
+    rows: list[dict[str, Any]] = [
+        {
+            "spectrum_source": "unfiltered",
+            "retained_energy_fraction_target": np.nan,
+            "achieved_energy_fraction": np.nan,
+            "cutoff_frequency": np.nan,
+            "cutoff_shell": np.nan,
+            "retained_bin_count": np.nan,
+            "window_rmse": window_rmse(u_pinn),
+            "final_error_time": final_unfiltered,
+            "final_error_reduction_factor": 1.0,
+        }
+    ]
+    curves: list[pd.DataFrame] = [
+        pd.DataFrame(
+            {
+                "method": "PINN",
+                "label": "PINN",
+                "t": t,
+                "error_l2": error_unfiltered,
+            }
+        )
+    ]
+    curve_labels = {
+        "raw_pinn_field": (
+            "PINN_Filtered",
+            "PINN (filtered, reduced-sensitivity cutoff)",
+        ),
+        "mean_removed_field": (
+            "PINN_Filtered_Mean_Removed",
+            "PINN (filtered, mean-removed spectrum)",
+        ),
+    }
+    diagnostics: dict[str, Any] = {
+        "tcut": float(tcut),
+        "window_sample_count": window_sample_count,
+        "frequency_resolution": frequency_resolution,
+        "q_values": [float(value) for value in q_values],
+        "curve_q": float(curve_q),
+    }
+    for source in ("raw_pinn_field", "mean_removed_field"):
+        for q_value in q_values:
+            filtered, result, cutoff_index = filter_field_after_cutoff(
+                u=u_pinn,
+                t=t,
+                t_cut=float(tcut),
+                dt=float(dt),
+                retained_energy_fraction=float(q_value),
+                spectrum_source=source,
+            )
+            error_filtered = compute_error_time(filtered, u_ref)
+            final_filtered = float(error_filtered[-1])
+            rows.append(
+                {
+                    "spectrum_source": source,
+                    "retained_energy_fraction_target": float(q_value),
+                    "achieved_energy_fraction": float(result.retained_energy_fraction),
+                    "cutoff_frequency": float(result.cutoff_frequency),
+                    "cutoff_shell": int(result.cutoff_shell),
+                    "retained_bin_count": int(result.retained_bin_count),
+                    "window_rmse": window_rmse(filtered),
+                    "final_error_time": final_filtered,
+                    "final_error_reduction_factor": (
+                        float(final_unfiltered / final_filtered)
+                        if final_filtered > 0.0
+                        else float("inf")
+                    ),
+                }
+            )
+            if np.isclose(float(q_value), float(curve_q), rtol=0.0, atol=1e-12):
+                method, label = curve_labels[source]
+                curves.append(
+                    pd.DataFrame(
+                        {
+                            "method": method,
+                            "label": label,
+                            "t": t,
+                            "error_l2": error_filtered,
+                        }
+                    )
+                )
+                segment = u_pinn[:, cutoff_index:]
+                if source == "raw_pinn_field":
+                    total_energy = float(np.sum(result.spectral_energy))
+                    diagnostics["zero_frequency_energy_fraction"] = float(
+                        result.spectral_energy[0] / total_energy
+                    )
+                    diagnostics["mean_projection_max_abs_difference"] = float(
+                        np.max(
+                            np.abs(
+                                result.filtered_segment
+                                - segment.mean(axis=1, keepdims=True)
+                            )
+                        )
+                    )
+                else:
+                    fluctuation_energy = result.spectral_energy
+                    total_fluctuation = float(np.sum(fluctuation_energy))
+                    first_pair = float(
+                        fluctuation_energy[1] + fluctuation_energy[-1]
+                    )
+                    diagnostics["first_shell_fluctuation_energy_fraction"] = float(
+                        first_pair / total_fluctuation
+                    )
+
+    return pd.DataFrame(rows), pd.concat(curves, ignore_index=True), diagnostics
+
+
 def main() -> None:
     """Generate spectral postprocess tables and metadata."""
     args = parse_args()
@@ -388,6 +529,12 @@ def main() -> None:
     adjacent_training_csv = (
         paths.postprocess_dir / "spectral_adjacent_training_discrepancy.csv"
     )
+    preprocessing_table_csv = (
+        paths.postprocess_dir / "spectral_preprocessing_sensitivity.csv"
+    )
+    preprocessing_time_csv = (
+        paths.postprocess_dir / "spectral_error_time_preprocessing.csv"
+    )
     legacy_esens_samples_csv = (
         paths.postprocess_dir / "spectral_error_time_esens_path_samples.csv"
     )
@@ -399,6 +546,8 @@ def main() -> None:
         space_csv,
         spectrum_csv,
         adjacent_training_csv,
+        preprocessing_table_csv,
+        preprocessing_time_csv,
         paths.postprocess_metadata,
     ]
     if validation_enabled:
@@ -654,12 +803,24 @@ def main() -> None:
             "final_error_time": float(error_rmse_path_time[-1]),
         }
 
+    preprocessing_table, preprocessing_time_df, preprocessing_diagnostics = (
+        build_preprocessing_sensitivity(
+            u_pinn=u_pinn,
+            t=t_ref,
+            u_ref=u_ref,
+            tcut=selected_tcut,
+            dt=dt,
+        )
+    )
+
     paths.postprocess_dir.mkdir(parents=True, exist_ok=True)
     save_csv(sweep, sensitivity_csv)
     save_csv(time_df, time_csv)
     save_csv(space_df, space_csv)
     save_csv(spectrum, spectrum_csv)
     save_csv(adjacent_training_df, adjacent_training_csv)
+    save_csv(preprocessing_table, preprocessing_table_csv)
+    save_csv(preprocessing_time_df, preprocessing_time_csv)
     if reference_window_sweep is not None:
         save_csv(reference_window_sweep, paths.reference_window_sweep)
     if rmse_path_time_df is not None:
@@ -789,6 +950,13 @@ def main() -> None:
                 else None
             ),
         },
+        "preprocessing_sensitivity": {
+            **preprocessing_diagnostics,
+            "tmax": selected_tmax,
+            "reference_used_for_selection": False,
+            "output": str(preprocessing_table_csv.relative_to(ROOT)),
+            "time_error_output": str(preprocessing_time_csv.relative_to(ROOT)),
+        },
         "pre_cutoff_identity": {
             "tcut": selected_tcut,
             "maximum_absolute_difference": float(
@@ -817,6 +985,12 @@ def main() -> None:
             "spectrum_csv": str(spectrum_csv.relative_to(ROOT)),
             "adjacent_training_discrepancy_csv": str(
                 adjacent_training_csv.relative_to(ROOT)
+            ),
+            "preprocessing_sensitivity_csv": str(
+                preprocessing_table_csv.relative_to(ROOT)
+            ),
+            "preprocessing_time_error_csv": str(
+                preprocessing_time_csv.relative_to(ROOT)
             ),
             "reference_window_sweep_csv": (
                 str(paths.reference_window_sweep.relative_to(ROOT))
@@ -944,6 +1118,16 @@ def main() -> None:
             f"window RMSE={rmse_path_details['filtered_window_rmse']:.6e}, "
             f"final E={rmse_path_details['final_error_time']:.6e}"
         )
+    print(
+        "Preprocessing sensitivity at the selected interval: "
+        f"M={preprocessing_diagnostics['window_sample_count']}, "
+        f"zero-frequency fraction="
+        f"{preprocessing_diagnostics['zero_frequency_energy_fraction']:.7f}, "
+        "mean-projection max deviation="
+        f"{preprocessing_diagnostics['mean_projection_max_abs_difference']:.3e}, "
+        "first-pair fluctuation fraction="
+        f"{preprocessing_diagnostics['first_shell_fluctuation_energy_fraction']:.4f}"
+    )
 
 
 if __name__ == "__main__":

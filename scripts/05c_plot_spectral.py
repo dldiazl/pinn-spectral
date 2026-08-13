@@ -48,6 +48,11 @@ DEFAULT_RMSE_TIME_CURVE_ORDER = [
     "PINN",
     "PINN_Filtered_RMSE_Path",
 ]
+DEFAULT_PREPROCESSING_TIME_CURVE_ORDER = [
+    "PINN",
+    "PINN_Filtered",
+    "PINN_Filtered_Mean_Removed",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,6 +111,77 @@ def require_methods(
             "Run: python scripts\\05b_postprocess_spectral.py --overwrite"
         )
 
+
+
+def plot_selected_spectrum(
+    spectrum_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot the spatially averaged spectrum of the selected temporal segment.
+
+    Every DFT bin is drawn at its absolute frequency so conjugate pairs
+    overlap, and the bins retained by the energy rule are highlighted. The
+    horizontal axis uses a symmetric-log scale whose linear threshold equals
+    the frequency resolution, so the zero-frequency bin remains visible next
+    to the logarithmically spaced remainder of the spectrum.
+    """
+    required = {"absolute_frequency", "spectral_energy", "retained"}
+    missing = required.difference(spectrum_df.columns)
+    if missing:
+        raise ValueError(
+            f"selected_spectrum.csv is missing columns: {sorted(missing)}."
+        )
+
+    frequencies = pd.to_numeric(
+        spectrum_df["absolute_frequency"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    energies = pd.to_numeric(
+        spectrum_df["spectral_energy"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    retained = spectrum_df["retained"].astype(bool).to_numpy()
+    valid = np.isfinite(frequencies) & np.isfinite(energies) & (energies > 0.0)
+    if not np.any(valid):
+        raise ValueError("The selected spectrum contains no positive finite energies.")
+    positive = frequencies[valid & (frequencies > 0.0)]
+    if positive.size == 0:
+        raise ValueError("The selected spectrum contains no nonzero frequencies.")
+    linear_threshold = float(np.min(positive))
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    discarded_mask = valid & ~retained
+    retained_mask = valid & retained
+    ax.scatter(
+        frequencies[discarded_mask],
+        energies[discarded_mask],
+        s=8.0,
+        color="tab:blue",
+        alpha=0.6,
+        edgecolors="none",
+        label="Discarded bins",
+    )
+    ax.scatter(
+        frequencies[retained_mask],
+        energies[retained_mask],
+        s=70.0,
+        marker="o",
+        color="tab:red",
+        edgecolors="black",
+        linewidths=0.6,
+        zorder=3,
+        label="Retained bins",
+    )
+    ax.set_xscale("symlog", linthresh=linear_threshold)
+    ax.set_yscale("log")
+    ax.set_xlim(left=-0.25 * linear_threshold)
+    ax.set_xlabel(r"$|f_k|$")
+    ax.set_ylabel(r"$P_k$")
+    ax.grid(True, which="major", linewidth=0.5, alpha=0.4)
+    ax.legend(loc="best", fontsize=8)
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_minimum_path_value_comparison(
@@ -420,10 +496,16 @@ def main() -> None:
     time_csv = paths.postprocess_dir / "spectral_error_time.csv"
     rmse_path_time_csv = paths.postprocess_dir / "spectral_error_time_rmse_path.csv"
     space_csv = paths.postprocess_dir / "spectral_error_space.csv"
+    spectrum_csv = paths.postprocess_dir / "selected_spectrum.csv"
+    preprocessing_time_csv = (
+        paths.postprocess_dir / "spectral_error_time_preprocessing.csv"
+    )
     required_inputs = [
         sensitivity_csv,
         time_csv,
         space_csv,
+        spectrum_csv,
+        preprocessing_time_csv,
         paths.postprocess_metadata,
     ]
     if validation_enabled:
@@ -442,6 +524,8 @@ def main() -> None:
     if validation_enabled:
         figures["fig06"] = paths.figure_dir / "fig06_filtered_error_time_rmse_path.png"
     figures["fig07"] = paths.figure_dir / "fig07_filtered_error_space.png"
+    figures["fig08"] = paths.figure_dir / "fig08_selected_spectrum.png"
+    figures["fig09"] = paths.figure_dir / "fig09_filtered_error_time_preprocessing.png"
     legacy_figures = [
         paths.figure_dir / "fig02_adjacent_training_discrepancy.png",
         paths.figure_dir / "fig08_filtered_error_space.png",
@@ -608,6 +692,40 @@ def main() -> None:
         xlabel=r"$x$",
         ylabel=r"$E(x)$",
         ylim=space_ylim,
+    )
+
+    spectrum_df = pd.read_csv(spectrum_csv)
+    plot_selected_spectrum(
+        spectrum_df=spectrum_df,
+        output_path=figures["fig08"],
+    )
+
+    preprocessing_raw = pd.read_csv(preprocessing_time_csv)
+    require_methods(
+        preprocessing_raw,
+        DEFAULT_PREPROCESSING_TIME_CURVE_ORDER,
+        "spectral_error_time_preprocessing.csv",
+    )
+    preprocessing_order = complete_method_order(
+        [str(value) for value in postprocess.get("preprocessing_time_curve_order", [])],
+        DEFAULT_PREPROCESSING_TIME_CURVE_ORDER,
+    )
+    preprocessing_df = ordered_methods(preprocessing_raw, preprocessing_order)
+    plot_grouped_error_curves_from_dataframe(
+        df=preprocessing_df,
+        output_path=figures["fig09"],
+        x_column="t",
+        xlabel=r"$t$",
+        ylabel=r"$E(t)$",
+        ylim=time_ylim,
+        vertical_markers=[
+            {
+                "x": selected_tcut,
+                "label": r"$t_{\mathrm{cut}}^{\mathrm{RS}}$",
+                "linestyle": "--",
+                "linewidth": 1.0,
+            }
+        ],
     )
 
     print(
