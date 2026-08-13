@@ -484,3 +484,67 @@ def test_completed_window_discovery_rejects_marker_after_gap(tmp_path: Path) -> 
         assert "after an incomplete window" in str(error)
     else:
         raise AssertionError("Expected a progressive-window gap error.")
+
+
+def test_mean_removed_filter_recovers_fluctuation_structure() -> None:
+    """Mean removal must expose the fluctuation spectrum hidden by the DC bin."""
+    n_time = 256
+    dt = 0.01
+    t = np.arange(n_time, dtype=np.float64) * dt
+    period = n_time * dt
+    slow = 0.05 * np.sin(2.0 * np.pi * (5.0 / period) * t)
+    fast = 0.005 * np.sin(2.0 * np.pi * (100.0 / period) * t)
+    u = np.vstack([10.0 + slow + fast, 20.0 + 2.0 * (slow + fast)])
+
+    raw = symmetric_energy_lowpass(u, dt=dt, retained_energy_fraction=0.95)
+    removed = symmetric_energy_lowpass(
+        u,
+        dt=dt,
+        retained_energy_fraction=0.95,
+        spectrum_source="mean_removed_field",
+    )
+
+    assert raw.cutoff_shell == 0
+    assert raw.retained_bin_count == 1
+    assert np.allclose(raw.filtered_segment, u.mean(axis=1, keepdims=True), atol=1e-12)
+
+    assert removed.spectrum_source == "mean_removed_field"
+    assert removed.cutoff_shell == 5
+    expected = u.mean(axis=1, keepdims=True) + np.vstack([slow, 2.0 * slow])
+    assert np.allclose(removed.filtered_segment, expected, atol=1e-10)
+
+
+def test_mean_removed_filter_preserves_samples_before_cutoff() -> None:
+    """The mean-removed mode must keep the pre-cutoff field bitwise unchanged."""
+    dt = 0.01
+    t = np.arange(101, dtype=np.float64) * dt
+    u = np.vstack(
+        [
+            0.5 + 0.2 * np.sin(2.0 * np.pi * 3.0 * t),
+            1.0 + 0.1 * np.cos(2.0 * np.pi * 7.0 * t),
+        ]
+    )
+
+    filtered, result, cutoff_index = filter_field_after_cutoff(
+        u,
+        t,
+        t_cut=0.4,
+        dt=dt,
+        retained_energy_fraction=0.95,
+        spectrum_source="mean_removed_field",
+    )
+
+    assert cutoff_index == 40
+    assert np.array_equal(filtered[:, :cutoff_index], u[:, :cutoff_index])
+    assert result.spectrum_source == "mean_removed_field"
+
+
+def test_invalid_spectrum_source_is_rejected() -> None:
+    """Unknown spectrum sources must raise a clear error."""
+    u = np.ones((2, 8), dtype=np.float64)
+    try:
+        symmetric_energy_lowpass(u, dt=0.1, spectrum_source="detrended_field")
+    except ValueError as error:
+        assert "spectrum_source" in str(error)
+    else:
+        raise AssertionError("Expected a spectrum_source validation error.")

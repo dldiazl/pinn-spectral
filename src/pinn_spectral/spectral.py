@@ -66,6 +66,7 @@ class SpectralFilterResult:
     retained_bin_count: int
     total_bin_count: int
     maximum_imaginary_residual: float
+    spectrum_source: str = "raw_pinn_field"
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,9 @@ def build_spectral_output_paths(
     )
 
 
+SPECTRUM_SOURCES = ("raw_pinn_field", "mean_removed_field")
+
+
 def _validate_segment(u_segment: np.ndarray, dt: float, retained_energy_fraction: float) -> np.ndarray:
     """Validate and normalize one temporal signal matrix."""
     u_segment = np.asarray(u_segment, dtype=np.float64)
@@ -229,6 +233,7 @@ def symmetric_energy_lowpass(
     u_segment: np.ndarray,
     dt: float,
     retained_energy_fraction: float = 0.95,
+    spectrum_source: str = "raw_pinn_field",
 ) -> SpectralFilterResult:
     """Filter a temporal segment using the article's two-sided energy rule.
 
@@ -242,15 +247,28 @@ def symmetric_energy_lowpass(
     retained_energy_fraction:
         Target fraction ``q`` in the article. The smallest symmetric frequency
         shell whose cumulative two-sided energy reaches ``q`` is retained.
+    spectrum_source:
+        ``"raw_pinn_field"`` applies the energy rule to the spectrum of the
+        segment itself. ``"mean_removed_field"`` removes the per-node temporal
+        mean before the transform, applies the energy rule to the fluctuation
+        spectrum, and restores the mean in the reconstruction; the retained
+        fraction and all spectral diagnostics then describe the fluctuation
+        signal rather than the raw segment.
 
     Returns
     -------
     SpectralFilterResult
         Filtered segment and complete spectral diagnostics.
     """
+    if spectrum_source not in SPECTRUM_SOURCES:
+        raise ValueError(f"spectrum_source must be one of {SPECTRUM_SOURCES}.")
     u_segment = _validate_segment(u_segment, dt, retained_energy_fraction)
     n_time = int(u_segment.shape[1])
-    spectrum = np.fft.fft(u_segment, axis=1)
+    if spectrum_source == "mean_removed_field":
+        temporal_mean = u_segment.mean(axis=1, keepdims=True)
+    else:
+        temporal_mean = np.zeros((u_segment.shape[0], 1), dtype=np.float64)
+    spectrum = np.fft.fft(u_segment - temporal_mean, axis=1)
     spectral_energy = np.mean(np.abs(spectrum) ** 2, axis=0)
     total_energy = float(np.sum(spectral_energy))
     if not np.isfinite(total_energy) or total_energy <= 0.0:
@@ -271,7 +289,7 @@ def symmetric_energy_lowpass(
 
     filtered_complex = np.fft.ifft(spectrum * retained_mask[np.newaxis, :], axis=1)
     maximum_imaginary_residual = float(np.max(np.abs(filtered_complex.imag)))
-    filtered_segment = filtered_complex.real.astype(np.float64, copy=False)
+    filtered_segment = temporal_mean + filtered_complex.real.astype(np.float64, copy=False)
     frequencies = np.fft.fftfreq(n_time, d=float(dt)).astype(np.float64)
     cutoff_frequency = float(cutoff_shell / (n_time * float(dt)))
     achieved_fraction = float(np.sum(spectral_energy[retained_mask]) / total_energy)
@@ -287,6 +305,7 @@ def symmetric_energy_lowpass(
         retained_bin_count=int(np.count_nonzero(retained_mask)),
         total_bin_count=n_time,
         maximum_imaginary_residual=maximum_imaginary_residual,
+        spectrum_source=spectrum_source,
     )
 
 
@@ -311,12 +330,15 @@ def filter_field_after_cutoff(
     t_cut: float,
     dt: float,
     retained_energy_fraction: float = 0.95,
+    spectrum_source: str = "raw_pinn_field",
 ) -> tuple[np.ndarray, SpectralFilterResult, int]:
     """Filter ``u`` from ``t_cut`` onward and preserve all earlier samples.
 
     The returned field satisfies Eq. (41) of the article: indices strictly
     before the cutoff are copied exactly, while the cutoff sample and all later
-    samples are replaced by the IDFT reconstruction.
+    samples are replaced by the IDFT reconstruction. The ``spectrum_source``
+    option selects the analyzed signal as documented in
+    :func:`symmetric_energy_lowpass`.
     """
     u = np.asarray(u, dtype=np.float64)
     t = np.asarray(t, dtype=np.float64)
@@ -327,6 +349,7 @@ def filter_field_after_cutoff(
         u[:, cutoff_index:],
         dt=dt,
         retained_energy_fraction=retained_energy_fraction,
+        spectrum_source=spectrum_source,
     )
     filtered = u.copy()
     filtered[:, cutoff_index:] = result.filtered_segment
@@ -1603,7 +1626,11 @@ def run_spectral_data_generation(
         analysis.get("reduced_sensitivity_minimum_points_per_segment", 3)
     )
     if str(analysis.get("spectrum_source", "raw_pinn_field")) != "raw_pinn_field":
-        raise ValueError("Only analysis.spectrum_source='raw_pinn_field' is implemented for the article workflow.")
+        raise ValueError(
+            "The article workflow uses analysis.spectrum_source='raw_pinn_field'; the "
+            "'mean_removed_field' mode is available through symmetric_energy_lowpass and "
+            "filter_field_after_cutoff for diagnostic comparisons."
+        )
 
     window_state = discover_completed_pinn_windows(pinn_config, root)
     schedule = window_state.completed_schedule
