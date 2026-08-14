@@ -184,117 +184,103 @@ def plot_selected_spectrum(
     plt.close(fig)
 
 
-def plot_minimum_path_value_comparison(
+def plot_selected_cutoff_paths(
     sensitivity_df: pd.DataFrame,
     reference_df: pd.DataFrame,
     output_path: Path,
     xlim: tuple[float, float],
 ) -> None:
-    """Compare minimum sensitivity and reference-RMSE path values versus ``tmax``.
+    """Plot the cutoffs selected by each criterion against ``tmax``.
 
-    This plot preserves the original diagnostic that compares the shapes of
-    the two minimum-value paths. It is descriptive only: the reference-RMSE
-    path does not participate in the reference-free cutoff selection.
+    Three selectors are compared: the raw minimum-sensitivity cutoff and the
+    BIC reduced-sensitivity onset, both reference-free, and the
+    reference-informed minimum-RMSE cutoff. The BIC onset is the proposed
+    selector, so it is drawn as the primary curve; the raw minimum remains a
+    secondary diagnostic. The dotted diagonal marks the ``tcut = tmax``
+    boundary of the tested triangular domain.
     """
-    sensitivity_required = {
-        "tmax",
-        "inter_filter_sensitivity",
-        "is_minimum_for_tmax",
-    }
-    reference_required = {
-        "tmax",
-        "filtered_window_rmse",
-        "is_minimum_reference_rmse_for_tmax",
-    }
+    sensitivity_required = {"tmax", "tcut", "is_minimum_for_tmax", "is_reduced_sensitivity_onset"}
+    reference_required = {"tmax", "tcut", "is_minimum_reference_rmse_for_tmax"}
     missing_sensitivity = sensitivity_required.difference(sensitivity_df.columns)
     missing_reference = reference_required.difference(reference_df.columns)
     if missing_sensitivity:
         raise ValueError(
-            "spectral_sensitivity.csv is missing minimum-path columns: "
+            "spectral_sensitivity.csv is missing cutoff-path columns: "
             f"{sorted(missing_sensitivity)}."
         )
     if missing_reference:
         raise ValueError(
-            "spectral_reference_window_sweep.csv is missing minimum-path columns: "
+            "spectral_reference_window_sweep.csv is missing cutoff-path columns: "
             f"{sorted(missing_reference)}."
         )
 
-    sensitivity_path = sensitivity_df.loc[
-        sensitivity_df["is_minimum_for_tmax"].astype(bool),
-        ["tmax", "inter_filter_sensitivity"],
-    ].copy()
-    reference_path = reference_df.loc[
-        reference_df["is_minimum_reference_rmse_for_tmax"].astype(bool),
-        ["tmax", "filtered_window_rmse"],
-    ].copy()
+    def _path(df: pd.DataFrame, flag: str) -> pd.DataFrame:
+        rows = df.loc[df[flag].astype(bool), ["tmax", "tcut"]].copy()
+        for column in ("tmax", "tcut"):
+            rows[column] = pd.to_numeric(rows[column], errors="coerce")
+        rows = rows.dropna().sort_values("tmax")
+        if rows.duplicated("tmax").any():
+            raise ValueError(f"The '{flag}' path contains duplicate tmax values.")
+        return rows
 
-    for column in ["tmax", "inter_filter_sensitivity"]:
-        sensitivity_path[column] = pd.to_numeric(
-            sensitivity_path[column], errors="coerce"
-        )
-    for column in ["tmax", "filtered_window_rmse"]:
-        reference_path[column] = pd.to_numeric(
-            reference_path[column], errors="coerce"
-        )
+    minimum_path = _path(sensitivity_df, "is_minimum_for_tmax")
+    onset_path = _path(sensitivity_df, "is_reduced_sensitivity_onset")
+    rmse_path = _path(reference_df, "is_minimum_reference_rmse_for_tmax")
+    if onset_path.empty:
+        raise ValueError("No reduced-sensitivity onset rows are available to plot.")
 
-    sensitivity_path = sensitivity_path.dropna().sort_values("tmax")
-    reference_path = reference_path.dropna().sort_values("tmax")
-    sensitivity_path = sensitivity_path[
-        sensitivity_path["inter_filter_sensitivity"] > 0.0
-    ]
-    reference_path = reference_path[reference_path["filtered_window_rmse"] > 0.0]
-    if sensitivity_path.empty or reference_path.empty:
-        raise ValueError(
-            "Minimum-path comparison requires positive finite sensitivity and RMSE values."
-        )
-    if sensitivity_path.duplicated("tmax").any():
-        raise ValueError("The minimum-sensitivity path contains duplicate tmax values.")
-    if reference_path.duplicated("tmax").any():
-        raise ValueError("The minimum-reference-RMSE path contains duplicate tmax values.")
-
-    fig, left_axis = plt.subplots(figsize=(7.5, 4.8))
-    right_axis = left_axis.twinx()
-
-    sensitivity_line = left_axis.plot(
-        sensitivity_path["tmax"],
-        sensitivity_path["inter_filter_sensitivity"],
-        marker="o",
-        linewidth=1.8,
-        color="tab:blue",
-        label=r"Minimum $E_{\mathrm{sens}}$ path value",
-    )[0]
-    rmse_line = right_axis.plot(
-        reference_path["tmax"],
-        reference_path["filtered_window_rmse"],
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    diagonal = np.linspace(xlim[0], xlim[1], 2)
+    ax.plot(
+        diagonal,
+        diagonal,
+        linestyle=":",
+        linewidth=0.9,
+        color="gray",
+        label=r"$t_{\mathrm{cut}}=t_{\max}$",
+    )
+    ax.plot(
+        minimum_path["tmax"],
+        minimum_path["tcut"],
+        marker="^",
+        markersize=4.0,
+        linewidth=1.0,
+        linestyle="-.",
+        color="tab:gray",
+        label=r"Minimum $E_{\mathrm{sens}}$ path",
+    )
+    ax.plot(
+        rmse_path["tmax"],
+        rmse_path["tcut"],
         marker="s",
-        linewidth=1.8,
+        markersize=4.0,
+        linewidth=1.4,
         linestyle="--",
         color="tab:orange",
-        label="Minimum reference RMSE path value",
-    )[0]
-
-    left_axis.set_xlabel(r"$t_{\max}$")
-    left_axis.set_ylabel(r"Minimum $E_{\mathrm{sens}}$", color="tab:blue")
-    right_axis.set_ylabel("Minimum reference RMSE", color="tab:orange")
-    left_axis.set_yscale("log")
-    right_axis.set_yscale("log")
-    left_axis.tick_params(axis="y", colors="tab:blue")
-    right_axis.tick_params(axis="y", colors="tab:orange")
-    left_axis.spines["left"].set_color("tab:blue")
-    right_axis.spines["right"].set_color("tab:orange")
-    left_axis.set_xlim(*xlim)
-    left_axis.grid(True, which="major", linewidth=0.5, alpha=0.4)
-    left_axis.legend(
-        [sensitivity_line, rmse_line],
-        [sensitivity_line.get_label(), rmse_line.get_label()],
-        loc="best",
-        fontsize=8,
+        label="Minimum reference-RMSE path",
     )
+    ax.plot(
+        onset_path["tmax"],
+        onset_path["tcut"],
+        marker="o",
+        markersize=5.0,
+        linewidth=2.0,
+        color="tab:blue",
+        label="Reduced-sensitivity onset (BIC)",
+    )
+
+    ax.set_xlabel(r"$t_{\max}$")
+    ax.set_ylabel(r"$t_{\mathrm{cut}}$")
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*xlim)
+    ax.grid(True, which="major", linewidth=0.5, alpha=0.4)
+    ax.legend(loc="upper left", fontsize=8)
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
+
 
 def plot_final_time_reduced_sensitivity_profile(
     sensitivity_df: pd.DataFrame,
@@ -518,7 +504,7 @@ def main() -> None:
     }
     if validation_enabled:
         figures["fig02"] = paths.figure_dir / "fig02_filtered_reference_window_rmse.png"
-        figures["fig03"] = paths.figure_dir / "fig03_esens_reference_rmse_path_values.png"
+        figures["fig03"] = paths.figure_dir / "fig03_selected_cutoff_paths.png"
         figures["fig04"] = paths.figure_dir / "fig04_reduced_sensitivity_analysis.png"
     figures["fig05"] = paths.figure_dir / "fig05_filtered_error_time.png"
     if validation_enabled:
@@ -528,6 +514,7 @@ def main() -> None:
     figures["fig09"] = paths.figure_dir / "fig09_filtered_error_time_preprocessing.png"
     legacy_figures = [
         paths.figure_dir / "fig02_adjacent_training_discrepancy.png",
+        paths.figure_dir / "fig03_esens_reference_rmse_path_values.png",
         paths.figure_dir / "fig08_filtered_error_space.png",
         paths.figure_dir / "fig12c_esens_path_filtered_samples.png",
     ]
@@ -606,7 +593,7 @@ def main() -> None:
             xlim=sensitivity_xlim,
             ylim=sensitivity_ylim,
         )
-        plot_minimum_path_value_comparison(
+        plot_selected_cutoff_paths(
             sensitivity_df=sensitivity,
             reference_df=reference_sweep,
             output_path=figures["fig03"],
