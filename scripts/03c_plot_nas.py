@@ -27,6 +27,7 @@ if str(SRC) not in sys.path:
 
 from pinn_spectral.tools import (  # noqa: E402
     add_overwrite_argument,
+    build_nas_generation_diagnostics,
     compute_pooled_log_ylim,
     error_time_source_paths,
     load_or_build_nas_trials_table,
@@ -119,6 +120,7 @@ def build_paths(config: dict[str, Any]) -> dict[str, Path]:
         "fdm_error_time_csv": fdm_dir / "fdm_error_time.csv",
         "fig01a": figure_dir / "fig01a_nas_pareto.png",
         "fig01b": figure_dir / "fig01b_nas_loss_histories.png",
+        "fig01c": figure_dir / "fig01c_nas_generation_convergence.png",
         "fig02a": figure_dir / "fig02a_nas_profiles.png",
         "fig02b": figure_dir / "fig02b_nas_error_time.png",
     }
@@ -264,6 +266,62 @@ def plot_nas_loss_histories(trials: pd.DataFrame, output_path: str | Path) -> No
     plt.close(fig)
 
 
+def plot_nas_generation_convergence(trials: pd.DataFrame, output_path: str | Path) -> None:
+    """Plot the generation-level convergence of the NSGA-II search.
+
+    The left axis reports the cumulative best supervised loss after each
+    generation and the right axis the dominated hypervolume of the cumulative
+    Pareto front, computed in the normalized objective space documented by
+    :func:`pinn_spectral.tools.build_nas_generation_diagnostics`.
+    """
+    diagnostics, _ = build_nas_generation_diagnostics(trials)
+
+    fig, left_axis = plt.subplots(figsize=(6.5, 4.2))
+    right_axis = left_axis.twinx()
+
+    generations = diagnostics["generation"].to_numpy(dtype=int)
+    best_line = left_axis.plot(
+        generations,
+        diagnostics["cumulative_best_loss"],
+        marker="o",
+        linewidth=1.8,
+        color="tab:blue",
+        label=r"Cumulative best loss $J_{\mathrm{best}}^{(g)}$",
+    )[0]
+    hypervolume_line = right_axis.plot(
+        generations,
+        diagnostics["cumulative_hypervolume"],
+        marker="s",
+        linewidth=1.8,
+        linestyle="--",
+        color="tab:orange",
+        label="Cumulative Pareto hypervolume",
+    )[0]
+
+    left_axis.set_xlabel("Generation")
+    left_axis.set_ylabel(r"$J_{\mathrm{best}}^{(g)}$", color="tab:blue")
+    right_axis.set_ylabel("Hypervolume", color="tab:orange")
+    left_axis.set_yscale("log")
+    left_axis.set_xticks(generations)
+    left_axis.tick_params(axis="y", colors="tab:blue")
+    right_axis.tick_params(axis="y", colors="tab:orange")
+    left_axis.spines["left"].set_color("tab:blue")
+    right_axis.spines["right"].set_color("tab:orange")
+    left_axis.grid(True, which="major", linewidth=0.5, alpha=0.4)
+    left_axis.legend(
+        [best_line, hypervolume_line],
+        [best_line.get_label(), hypervolume_line.get_label()],
+        loc="center right",
+        fontsize=8,
+    )
+
+    fig.tight_layout()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_nas_profiles(input_path: str | Path, output_path: str | Path) -> None:
     """Plot analytical and NAS profiles using the reusable profile-zoom tool.
 
@@ -335,7 +393,7 @@ def main() -> None:
     config = load_nas_config(args.config)
     paths = build_paths(config)
 
-    figure_paths = [paths["fig01a"], paths["fig01b"]]
+    figure_paths = [paths["fig01a"], paths["fig01b"], paths["fig01c"]]
     if not args.skip_full_domain:
         figure_paths.extend([paths["fig02a"], paths["fig02b"]])
 
@@ -346,6 +404,7 @@ def main() -> None:
     trials = load_trials_for_plotting(paths)
     plot_nas_pareto(trials, paths["fig01a"])
     plot_nas_loss_histories(trials, paths["fig01b"])
+    plot_nas_generation_convergence(trials, paths["fig01c"])
 
     if args.skip_full_domain:
         print("Skipping full-domain NAS figures because --skip-full-domain was used.")

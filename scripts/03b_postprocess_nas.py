@@ -28,6 +28,7 @@ from pinn_spectral.benchmark import BenchmarkConfig  # noqa: E402
 from pinn_spectral.tools import (  # noqa: E402
     add_overwrite_argument,
     assert_same_grid,
+    build_nas_generation_diagnostics,
     compute_error_space,
     compute_error_time,
     load_or_build_nas_trials_table,
@@ -127,6 +128,7 @@ def build_paths(config: dict[str, Any]) -> dict[str, Path]:
         "time_csv": postprocess_dir / "nas_error_time.csv",
         "space_csv": postprocess_dir / "nas_error_space.csv",
         "profiles_csv": postprocess_dir / "nas_profiles.csv",
+        "generation_csv": metrics_dir / "nas_generation_diagnostics.csv",
         "metadata_json": metrics_dir / "nas_selected_model_metadata.json",
     }
 
@@ -283,7 +285,7 @@ def selected_architecture_metadata(selected: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compute_nas_postprocess(config: dict[str, Any], paths: dict[str, Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+def compute_nas_postprocess(config: dict[str, Any], paths: dict[str, Path]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Evaluate the selected NAS model and compute full-domain diagnostics.
 
     Parameters
@@ -295,9 +297,9 @@ def compute_nas_postprocess(config: dict[str, Any], paths: dict[str, Path]) -> t
 
     Returns
     -------
-    tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]
+    tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]
         Neural-network solution table, time-error table, space-error table,
-        profile table, and metadata.
+        profile table, generation-diagnostics table, and metadata.
     """
     require_file(paths["reference_path"], "Run: python scripts\\01a_generate_reference_data.py --overwrite")
     selected = select_trial(config, paths)
@@ -325,6 +327,19 @@ def compute_nas_postprocess(config: dict[str, Any], paths: dict[str, Path]) -> t
     profile_times = [float(value) for value in config.get("postprocess", {}).get("profile_times", [0.0, 0.25, 0.5, 0.75, 1.0])]
     profiles_df = compute_profiles(x_ref, t_ref, u_ref, u_nn_check, profile_times)
 
+    trials, _ = load_or_build_nas_trials_table(
+        trials_csv=paths["trials_csv"],
+        histories_dir=paths["histories_dir"],
+        models_dir=paths["models_dir"],
+        partial_trials_csv=paths["partial_trials_csv"],
+        root=ROOT,
+        include_manual=False,
+    )
+    generation_df, generation_summary = build_nas_generation_diagnostics(
+        trials,
+        selected_architecture_key=str(selected.get("architecture_key")),
+    )
+
     architecture = selected_architecture_metadata(selected)
     metadata = {
         "stage": "nas_postprocess",
@@ -337,6 +352,11 @@ def compute_nas_postprocess(config: dict[str, Any], paths: dict[str, Path]) -> t
         "full_prediction_final_time": float(t_ref[-1]),
         "training_final_time": float(config["training"]["training_final_time"]),
         "profile_times": profile_times,
+        "generation_diagnostics": {
+            **generation_summary,
+            "output": str(paths["generation_csv"].relative_to(ROOT)),
+            "table": generation_df.to_dict(orient="records"),
+        },
         "summary": {
             "max_error_time": float(np.max(error_time)),
             "final_error_time": float(error_time[-1]),
@@ -345,7 +365,7 @@ def compute_nas_postprocess(config: dict[str, Any], paths: dict[str, Path]) -> t
             "relative_global_l2_error": float(np.linalg.norm(u_nn_check - u_ref) / np.linalg.norm(u_ref)),
         },
     }
-    return nn_df, time_df, space_df, profiles_df, metadata
+    return nn_df, time_df, space_df, profiles_df, generation_df, metadata
 
 
 def save_nas_postprocess_outputs(
@@ -354,6 +374,7 @@ def save_nas_postprocess_outputs(
     time_df: pd.DataFrame,
     space_df: pd.DataFrame,
     profiles_df: pd.DataFrame,
+    generation_df: pd.DataFrame,
     metadata: dict[str, Any],
 ) -> None:
     """Write NAS postprocess outputs.
@@ -362,7 +383,7 @@ def save_nas_postprocess_outputs(
     ----------
     paths:
         Output paths.
-    nn_df, time_df, space_df, profiles_df:
+    nn_df, time_df, space_df, profiles_df, generation_df:
         DataFrames written by this stage.
     metadata:
         Serializable metadata mapping.
@@ -371,6 +392,7 @@ def save_nas_postprocess_outputs(
     save_csv(time_df, paths["time_csv"])
     save_csv(space_df, paths["space_csv"])
     save_csv(profiles_df, paths["profiles_csv"])
+    save_csv(generation_df, paths["generation_csv"])
     save_json(metadata, paths["metadata_json"])
 
 
@@ -379,23 +401,31 @@ def main() -> None:
     args = parse_args()
     config = load_nas_config(args.config)
     paths = build_paths(config)
-    expected_outputs = [paths["nn_data_path"], paths["time_csv"], paths["space_csv"], paths["profiles_csv"], paths["metadata_json"]]
+    expected_outputs = [paths["nn_data_path"], paths["time_csv"], paths["space_csv"], paths["profiles_csv"], paths["generation_csv"], paths["metadata_json"]]
     if should_skip(expected_outputs, overwrite=args.overwrite):
         print_skip_message(expected_outputs, ROOT)
         return
 
-    nn_df, time_df, space_df, profiles_df, metadata = compute_nas_postprocess(config, paths)
-    save_nas_postprocess_outputs(paths, nn_df, time_df, space_df, profiles_df, metadata)
+    nn_df, time_df, space_df, profiles_df, generation_df, metadata = compute_nas_postprocess(config, paths)
+    save_nas_postprocess_outputs(paths, nn_df, time_df, space_df, profiles_df, generation_df, metadata)
 
     summary = metadata["summary"]
     print("Saved NAS postprocess outputs:")
-    for key in ["nn_data_path", "time_csv", "space_csv", "profiles_csv", "metadata_json"]:
+    for key in ["nn_data_path", "time_csv", "space_csv", "profiles_csv", "generation_csv", "metadata_json"]:
         print(f"  {paths[key].relative_to(ROOT)}")
     print(
         "NAS full-domain error: "
         f"final E(t)={summary['final_error_time']:.6e}, "
         f"max E(t)={summary['max_error_time']:.6e}, "
         f"relative global L2={summary['relative_global_l2_error']:.6e}"
+    )
+    generation_summary = metadata["generation_diagnostics"]
+    print(
+        "NAS generation diagnostics: "
+        f"distinct architectures={generation_summary['distinct_architecture_count']}, "
+        f"duplicates={generation_summary['duplicate_evaluation_count']}, "
+        "selected first evaluated in generation "
+        f"{generation_summary['selected_first_generation']}"
     )
 
 

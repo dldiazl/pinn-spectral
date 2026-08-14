@@ -427,6 +427,130 @@ def compute_pareto_front_indices(objectives: np.ndarray) -> np.ndarray:
     return front_global[order]
 
 
+def _dominated_hypervolume_2d(front: np.ndarray) -> float:
+    """Return the area dominated by a 2-D minimization front in [0, 1]^2.
+
+    The front coordinates must already be normalized so that the reference
+    point is ``(1, 1)``; points outside the unit square are rejected.
+    """
+    values = np.asarray(front, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 2:
+        raise ValueError(f"Expected a (n, 2) front array, got shape {values.shape}.")
+    if values.size == 0:
+        return 0.0
+    if np.any(values < 0.0) or np.any(values > 1.0):
+        raise ValueError("Front coordinates must lie within the unit square.")
+    order = np.lexsort((values[:, 1], values[:, 0]))
+    u = values[order, 0]
+    v = values[order, 1]
+    lowest_v = np.minimum.accumulate(v)
+    next_u = np.append(u[1:], 1.0)
+    return float(np.sum((next_u - u) * (1.0 - lowest_v)))
+
+
+def build_nas_generation_diagnostics(
+    trials: pd.DataFrame,
+    selected_architecture_key: str | None = None,
+    loss_column: str = "final_loss",
+    time_column: str = "total_time_optimizer",
+    generation_column: str = "generation",
+    architecture_column: str = "architecture_key",
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Summarize generation-level convergence of the NSGA-II search.
+
+    For every generation, the returned table reports the number of trials,
+    the best supervised loss inside the generation, the cumulative best loss
+    over all trials evaluated so far, the size of the cumulative
+    non-dominated front in the (loss, optimizer-time) plane, and the
+    dominated hypervolume of that front. The hypervolume is evaluated in a
+    normalized objective space: ``log10`` of the loss and the raw optimizer
+    time are min-max scaled over all evaluated trials, and the reference
+    point is ``(1, 1)``. The summary records the distinct and duplicated
+    architecture counts and, when ``selected_architecture_key`` is given,
+    the generation in which that architecture was first evaluated.
+    Generations are reported one-based.
+    """
+    required = {loss_column, time_column, generation_column, architecture_column}
+    missing = required.difference(trials.columns)
+    if missing:
+        raise ValueError(f"NAS trials table is missing columns: {sorted(missing)}")
+
+    table = trials[
+        [generation_column, loss_column, time_column, architecture_column]
+    ].copy()
+    for column in (generation_column, loss_column, time_column):
+        table[column] = pd.to_numeric(table[column], errors="coerce")
+    table = table.dropna()
+    if table.empty:
+        raise ValueError("The NAS trials table contains no complete rows.")
+    if (table[loss_column] <= 0.0).any():
+        raise ValueError("Hypervolume normalization requires strictly positive losses.")
+
+    log_loss = np.log10(table[loss_column].to_numpy(dtype=np.float64))
+    times = table[time_column].to_numpy(dtype=np.float64)
+
+    def _normalize(values: np.ndarray) -> np.ndarray:
+        span = float(values.max() - values.min())
+        if span == 0.0:
+            return np.zeros_like(values)
+        return (values - float(values.min())) / span
+
+    normalized = np.column_stack([_normalize(log_loss), _normalize(times)])
+    generations = np.sort(table[generation_column].unique().astype(int))
+
+    rows: list[dict[str, Any]] = []
+    cumulative_best = float("inf")
+    previous_hypervolume = 0.0
+    generation_values = table[generation_column].to_numpy(dtype=np.float64)
+    for generation in generations:
+        in_generation = generation_values == float(generation)
+        cumulative_mask = generation_values <= float(generation)
+        generation_best = float(table.loc[in_generation, loss_column].min())
+        cumulative_best = min(cumulative_best, generation_best)
+        cumulative_points = normalized[cumulative_mask]
+        front_indices = compute_pareto_front_indices(cumulative_points)
+        hypervolume = _dominated_hypervolume_2d(cumulative_points[front_indices])
+        rows.append(
+            {
+                "generation": int(generation) + 1,
+                "trials_in_generation": int(np.count_nonzero(in_generation)),
+                "best_loss_in_generation": generation_best,
+                "cumulative_best_loss": cumulative_best,
+                "cumulative_front_size": int(front_indices.size),
+                "cumulative_hypervolume": hypervolume,
+                "hypervolume_increment": hypervolume - previous_hypervolume,
+            }
+        )
+        previous_hypervolume = hypervolume
+
+    architecture_keys = table[architecture_column].astype(str)
+    distinct_count = int(architecture_keys.nunique())
+    summary: dict[str, Any] = {
+        "trial_count": int(len(table)),
+        "generation_count": int(generations.size),
+        "distinct_architecture_count": distinct_count,
+        "duplicate_evaluation_count": int(len(table) - distinct_count),
+        "hypervolume_normalization": (
+            "log10 loss and optimizer wall-clock time min-max scaled over all "
+            "evaluated trials; reference point (1, 1)"
+        ),
+    }
+    if selected_architecture_key is not None:
+        matches = table.loc[
+            architecture_keys == str(selected_architecture_key), generation_column
+        ]
+        if matches.empty:
+            raise ValueError(
+                f"Selected architecture '{selected_architecture_key}' does not "
+                "appear in the trials table."
+            )
+        summary["selected_architecture_key"] = str(selected_architecture_key)
+        summary["selected_first_generation"] = int(matches.min()) + 1
+        summary["selected_evaluation_count"] = int(matches.size)
+
+    return pd.DataFrame(rows), summary
+
+
 def plot_pareto_front_from_dataframe(
     df: pd.DataFrame,
     output_path: str | Path,
