@@ -352,6 +352,74 @@ def build_adjacent_training_discrepancy(
     return pd.DataFrame(rows)
 
 
+def build_discrete_physics_diagnostics(
+    fields: dict[str, np.ndarray],
+    x: np.ndarray,
+    t: np.ndarray,
+    tcut: float,
+    benchmark: BenchmarkConfig,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Evaluate the discrete PDE residual and boundary discrepancy per field.
+
+    The residual applies one fixed centered-difference operator to every
+    field on the shared evaluation grid: centered differences in time and in
+    space over the interior nodes, so the first and last time levels and the
+    two boundary nodes are excluded. Because the same operator is applied to
+    the analytical reference, whose exact residual vanishes, the reference
+    row measures the truncation floor of the operator itself on this grid.
+    The boundary discrepancy compares the two Dirichlet nodes against their
+    imposed values at every time level. Both quantities are reported over
+    the full processed interval and over the filtered window ``t > tcut``.
+    """
+    dt = float(t[1] - t[0])
+    dx = float(x[1] - x[0])
+    velocity = float(benchmark.velocity)
+    diffusivity = float(benchmark.diffusivity)
+
+    interior_times = t[1:-1]
+    window_interior = interior_times > float(tcut) + 1e-12
+    window_all = t > float(tcut) + 1e-12
+
+    rows: list[dict[str, Any]] = []
+    for name, u in fields.items():
+        if u.shape != (x.size, t.size):
+            raise ValueError(f"Field '{name}' does not match the (nx, nt) grid.")
+        time_derivative = (u[:, 2:] - u[:, :-2]) / (2.0 * dt)
+        space_derivative = (u[2:, :] - u[:-2, :]) / (2.0 * dx)
+        second_derivative = (u[2:, :] - 2.0 * u[1:-1, :] + u[:-2, :]) / dx**2
+        residual = (
+            time_derivative[1:-1, :]
+            + velocity * space_derivative[:, 1:-1]
+            - diffusivity * second_derivative[:, 1:-1]
+        )
+        boundary_error = (u[0, :] - float(benchmark.u_left)) ** 2 + (
+            u[-1, :] - float(benchmark.u_right)
+        ) ** 2
+        rows.append(
+            {
+                "field": name,
+                "residual_rms_full": float(np.sqrt(np.mean(residual**2))),
+                "residual_rms_window": float(
+                    np.sqrt(np.mean(residual[:, window_interior] ** 2))
+                ),
+                "boundary_rms_full": float(np.sqrt(np.mean(boundary_error))),
+                "boundary_rms_window": float(
+                    np.sqrt(np.mean(boundary_error[window_all]))
+                ),
+            }
+        )
+
+    diagnostics = {
+        "tcut": float(tcut),
+        "operator": (
+            "centered differences in time and space on the shared evaluation "
+            "grid; interior nodes only"
+        ),
+        "reference_role": "truncation floor of the discrete operator",
+    }
+    return pd.DataFrame(rows), diagnostics
+
+
 def build_preprocessing_sensitivity(
     u_pinn: np.ndarray,
     t: np.ndarray,
@@ -535,6 +603,7 @@ def main() -> None:
     preprocessing_time_csv = (
         paths.postprocess_dir / "spectral_error_time_preprocessing.csv"
     )
+    physics_csv = paths.postprocess_dir / "spectral_discrete_physics.csv"
     legacy_esens_samples_csv = (
         paths.postprocess_dir / "spectral_error_time_esens_path_samples.csv"
     )
@@ -548,6 +617,7 @@ def main() -> None:
         adjacent_training_csv,
         preprocessing_table_csv,
         preprocessing_time_csv,
+        physics_csv,
         paths.postprocess_metadata,
     ]
     if validation_enabled:
@@ -813,6 +883,18 @@ def main() -> None:
         )
     )
 
+    physics_table, physics_diagnostics = build_discrete_physics_diagnostics(
+        fields={
+            "PINN": u_pinn,
+            "PINN_Filtered": u_filtered,
+            "Reference": u_ref,
+        },
+        x=x_ref,
+        t=t_ref,
+        tcut=selected_tcut,
+        benchmark=BenchmarkConfig.from_mapping(pinn_config["case"]),
+    )
+
     paths.postprocess_dir.mkdir(parents=True, exist_ok=True)
     save_csv(sweep, sensitivity_csv)
     save_csv(time_df, time_csv)
@@ -821,6 +903,7 @@ def main() -> None:
     save_csv(adjacent_training_df, adjacent_training_csv)
     save_csv(preprocessing_table, preprocessing_table_csv)
     save_csv(preprocessing_time_df, preprocessing_time_csv)
+    save_csv(physics_table, physics_csv)
     if reference_window_sweep is not None:
         save_csv(reference_window_sweep, paths.reference_window_sweep)
     if rmse_path_time_df is not None:
@@ -956,6 +1039,11 @@ def main() -> None:
             "reference_used_for_selection": False,
             "output": str(preprocessing_table_csv.relative_to(ROOT)),
             "time_error_output": str(preprocessing_time_csv.relative_to(ROOT)),
+        },
+        "discrete_physics": {
+            **physics_diagnostics,
+            "output": str(physics_csv.relative_to(ROOT)),
+            "table": physics_table.to_dict(orient="records"),
         },
         "pre_cutoff_identity": {
             "tcut": selected_tcut,
@@ -1128,6 +1216,13 @@ def main() -> None:
         "first-pair fluctuation fraction="
         f"{preprocessing_diagnostics['first_shell_fluctuation_energy_fraction']:.4f}"
     )
+    print("Discrete physics diagnostics (residual RMS full/window, BC RMS full/window):")
+    for row in physics_table.to_dict(orient="records"):
+        print(
+            f"  {row['field']}: "
+            f"{row['residual_rms_full']:.4e}/{row['residual_rms_window']:.4e}, "
+            f"{row['boundary_rms_full']:.4e}/{row['boundary_rms_window']:.4e}"
+        )
 
 
 if __name__ == "__main__":
